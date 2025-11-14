@@ -1,0 +1,850 @@
+---
+title: "TCJA effect on hospital industry"
+output: html_document
+date: "2025-11-03"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, error=FALSE}
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(knitr)
+library(kableExtra)
+library(scales)
+library(fixest)
+library(openxlsx)
+library(writexl)
+library(modelsummary)
+```
+
+```{r reading datas}
+data_2015 <- read.csv('CostReport_2015_Final.csv')
+data_2016 <- read.csv('CostReport_2016_Final.csv')
+data_2017 <- read.csv('CostReport_2017_Final.csv')
+data_2018 <- read.csv('CostReport_2018_Final.csv')
+data_2019 <- read.csv('CostReport_2019_Final.csv')
+data_2020 <- read.csv('CostReport_2020_Final.csv')
+data_2021 <- read.csv('CostReport_2021_Final.csv')
+data_2022 <- read.csv('CostReport_2022_Final.csv')
+```
+
+```{r merge years}
+data_2015 <- data_2015 %>% mutate(Year = 2015)
+data_2016 <- data_2016 %>% mutate(Year = 2016)
+data_2017 <- data_2017 %>% mutate(Year = 2017)
+data_2018 <- data_2018 %>% mutate(Year = 2018)
+data_2019 <- data_2019 %>% mutate(Year = 2019)
+data_2020 <- data_2020 %>% mutate(Year = 2020)
+data_2021 <- data_2021 %>% mutate(Year = 2021)
+data_2022 <- data_2022 %>% mutate(Year = 2022)
+data_all_years <- bind_rows(data_2015, data_2016, data_2017, data_2018, data_2019,data_2020,data_2021,data_2022 )
+
+```
+
+```{r data cleaning}
+data_all_years <- data_all_years %>%
+  filter(!is.na(Rural.Versus.Urban) & !is.na(FTE...Employees.on.Payroll))
+
+data_all_years <- data_all_years %>%
+  group_by(Hospital.Name) %>%
+  filter(n() == 8) 
+
+
+colnames(data_all_years)
+
+```
+
+```{r choose variable}
+
+data_all_years <- data_all_years %>% select(Provider.CCN, Hospital.Name, State.Code, City, County, Rural.Versus.Urban, Provider.Type,Type.of.Control, FTE...Employees.on.Payroll, Number.of.Beds, Total.Discharges.Title.XVIII,  Total.Salaries.From.Worksheet.A,  Total.Income, Total.Costs, Year)
+
+
+data_all_years <- data_all_years %>%
+  mutate(Type.of.Control = case_when(
+    Type.of.Control %in% c(1, 2, 7:13) ~ "Non-profit",
+    Type.of.Control %in% c(3, 4, 5, 6) ~ "For-profit",
+    TRUE ~ NA_character_
+  ))
+
+data_all_years <- na.omit(data_all_years)
+
+data_all_years <- data_all_years %>%
+  group_by(Hospital.Name) %>%
+  filter(n() == 8) 
+colSums(is.na(data_all_years))
+
+```
+
+```{r remove hosptials switched statues}
+
+Switchdata_all_years <- data_all_years %>%
+  group_by(Hospital.Name) %>%
+  summarize(n_unique_fp = n_distinct(Type.of.Control), .groups = "drop") %>%
+  filter(n_unique_fp > 1) %>%
+  pull(Hospital.Name)
+
+data_all_years <- data_all_years %>%
+  filter(!Hospital.Name %in% Switchdata_all_years)
+
+length(Switchdata_all_years)
+
+table(data_all_years$Type.of.Control)
+
+control_summary <- data_all_years %>%
+  group_by(Type.of.Control) %>%
+  summarize(
+    count = n()/8,
+    percent = round(100 * n() / nrow(data_all_years), 2),
+    .groups = "drop"
+  )
+
+kable(control_summary, caption = "Distribution of Hospital Types (Filtered Dataset)", 
+      col.names = c("Type of Control", "Count", "Percent (%)"), align = "lcc")
+```
+
+```{r reassign variable}
+data_all_years <- data_all_years %>%
+  mutate(for_profit = ifelse(Type.of.Control == "For-profit", 1, 0))
+
+
+data_all_years <- data_all_years %>%
+  mutate(urban = ifelse(Rural.Versus.Urban == "R", 1, 0))
+
+```
+
+
+```{r summary statistic for profit vs non profit}
+hospital_summary <- data_all_years %>%
+  mutate(for_profit = as.numeric(for_profit)) %>%
+  group_by(State.Code, for_profit) %>%
+  summarize(n_hospitals = n_distinct(Hospital.Name), .groups = "drop") %>%
+  pivot_wider(
+    names_from = for_profit,
+    values_from = n_hospitals,
+    values_fill = 0
+  ) %>%
+  rename(
+    for_profit_0 = `0`,
+    for_profit_1 = `1`
+  ) %>%
+  mutate(
+    total = for_profit_0 + for_profit_1,
+    pct_nonprofit = round(for_profit_0 / total * 100, 1),
+    pct_forprofit = round(for_profit_1 / total * 100, 1)
+  ) %>%
+  arrange(State.Code)
+
+kable(
+  hospital_summary,
+  caption = "Distribution of Hospital Types by State",
+  col.names = c("State", "Non-Profit", "For-Profit", "Total", "Pct Non-Profit (%)", "Pct For-Profit (%)"),
+  align = "lccccr"
+)
+
+```
+
+```{r exclude state that have less than 5% for profit hopsptial}
+
+hospital_summary_filtered <- hospital_summary %>%
+  filter(pct_forprofit >= 5)
+
+hospital_summary_filtered
+
+
+# excluded 11 states
+
+valid_states <- hospital_summary_filtered$State.Code
+
+data_all_years_filtered <- data_all_years %>%
+  filter(State.Code %in% valid_states)
+
+length(unique(data_all_years_filtered$State.Code))
+table(data_all_years_filtered$Type.of.Control)
+
+```
+```{r excluded states}
+excluded_states <- hospital_summary %>%
+  filter(pct_forprofit < 5) %>%
+  select(State.Code, pct_forprofit) %>%
+  arrange(pct_forprofit)
+
+kable(
+  excluded_states,
+  caption = "States Excluded from DID Analysis",
+  col.names = c("State", "Percent For-Profit Hospitals"),
+  align = "lc"
+)
+
+```
+
+
+
+```{r parallel trend payrolllog}
+
+data_all_years_filtered$LOGFTE...Employees.on.Payroll <- log(data_all_years_filtered$FTE...Employees.on.Payroll)
+
+data_all_years_plotFTEpayrolllog <- data_all_years_filtered %>%
+  group_by(Year, Type.of.Control) %>%
+  summarise(avg_LOGFTEpayroll = median(LOGFTE...Employees.on.Payroll, na.rm = TRUE))
+
+
+ggplot(data_all_years_plotFTEpayrolllog, aes(x = Year, y = avg_LOGFTEpayroll, color = Type.of.Control, group = Type.of.Control)) +
+  geom_line(linewidth = 1.2) +   
+  geom_point(size = 2) + 
+  geom_vline(xintercept = 2018, linetype = "dashed", color = "red", linewidth = 1) + 
+  labs(x = "Year", y = " log of full time employees on Payroll", color = "Hospital Type",
+       title = "Parallel Trends Check for log(employees on payroll)") +
+  theme_minimal() + 
+  ylim(5, 6.5)
+
+```
+
+```{r parallel trend payroll}
+data_all_years_plotFTEpayroll <- data_all_years_filtered %>%
+  group_by(Year, Type.of.Control) %>%
+  summarise(avg_FTEpayroll = mean(FTE...Employees.on.Payroll, na.rm = TRUE))
+
+
+ggplot(data_all_years_plotFTEpayroll, aes(x = Year, y = avg_FTEpayroll, color = Type.of.Control, group = Type.of.Control)) +
+  geom_line(linewidth = 1.2) +   
+  geom_point(size = 2) + 
+  labs(x = "Year", y = "full time employees on Payroll", color = "Hospital Type",
+       title = "Parallel Trends Check") +
+  theme_minimal() + 
+  ylim(0, 2500)
+
+
+
+```
+
+```{r parallel trend for salary }
+data_all_years_plotsalary <- data_all_years_filtered %>%
+  group_by(Year, Type.of.Control) %>%
+  summarise(avg_salary = mean(Total.Salaries.From.Worksheet.A, na.rm = TRUE))
+
+ggplot(data_all_years_plotsalary, aes(x = Year, y = avg_salary, color = Type.of.Control, group = Type.of.Control)) +
+  geom_line(linewidth = 1.2) +   
+  geom_point(size = 2) + 
+  labs(x = "Year", y = " total salary from worksheet A", color = "Hospital Type",
+       title = "Parallel Trends Check") +
+  theme_minimal() + 
+  ylim(20000000, 120000000)
+
+```
+
+```{r parallel trend salary log}
+data_all_years_filtered$Total.Salaries.From.Worksheet.ALOG <- log(data_all_years_filtered$Total.Salaries.From.Worksheet.A)
+
+data_all_years_plotsalaryLOG <- data_all_years_filtered %>%
+  group_by(Year, Type.of.Control) %>%
+  summarise(avg_salaryLOG = median(Total.Salaries.From.Worksheet.ALOG, na.rm = TRUE))
+
+ggplot(data_all_years_plotsalaryLOG, aes(x = Year, y = avg_salaryLOG, color = Type.of.Control, group = Type.of.Control)) +
+  geom_line(linewidth = 1.2) +   
+  geom_point(size = 2) + 
+  geom_vline(xintercept = 2018, linetype = "dashed", color = "red", linewidth = 1) + 
+  labs(x = "Year", y = "log of total salary from worksheet A", color = "Hospital Type",
+       title = "Parallel Trends Check for log(total salary)") +
+  theme_minimal() + 
+  ylim(16,17.5)
+
+```
+
+```{r parallel trend income}
+data_all_years_filtered$Total.Income.ALOG <- log(data_all_years_filtered$Total.Income)
+
+data_all_years_plotincomeLOG <- data_all_years_filtered %>%
+  group_by(Year, Type.of.Control) %>%
+  summarise(avg_incomeLOG = mean(Total.Income.ALOG, na.rm = TRUE))
+
+ggplot(data_all_years_plotincomeLOG, aes(x = Year, y = avg_incomeLOG, color = Type.of.Control, group = Type.of.Control)) +
+  geom_line(linewidth = 1.2) +   
+  geom_point(size = 2) + 
+  labs(x = "Year", y = "log of total income", color = "Hospital Type",
+       title = "Parallel Trends Check") +
+  theme_minimal() 
+  
+```
+
+```{r}
+data_all_years_filtered %>%
+  filter(Hospital.Name == "THE REHAB HOSPITAL AT RARITAN BAY") %>%
+  select(Year, Number.of.Beds)
+
+data_all_years_filtered %>%
+  filter(Hospital.Name == "HOAG ORTHOPEDIC INSTITUTE") %>%
+  select(Total.Salaries.From.Worksheet.A)
+
+data_all_years_filtered %>%
+  filter(Hospital.Name == "STAFFORD COUNTY HOSPITAL") %>%
+  select(FTE...Employees.on.Payroll)
+
+data_all_years_filtered %>%
+  filter(Hospital.Name == "LYNN HOUSE OF POTOMAC VALLEY  INC.") %>%
+  select(Number.of.Beds)
+
+
+data_all_years_filtered %>%
+  filter(Hospital.Name == "WAYNE HOSPITAL COMPANY") %>%
+  select(Number.of.Beds)	
+
+
+data_all_years_filtered %>%
+  filter(Hospital.Name == "BEAR LAKE MEMORIAL HOSPITAL") %>%
+  select(Number.of.Beds)
+
+data_all_years_filtered %>%
+  filter(Hospital.Name == "OKLAHOMA HEART HOSPITAL") %>%
+  select(Number.of.Beds)
+	
+
+```
+
+```{r}
+data_all_years_filtered <- data_all_years_filtered %>%
+  mutate(Number.of.Beds = ifelse(
+    Hospital.Name == "THE REHAB HOSPITAL AT RARITAN BAY" & Year == 2015,
+    76,
+    Number.of.Beds
+  ))
+
+data_all_years_filtered <- data_all_years_filtered %>%
+  mutate(Number.of.Beds = ifelse(
+    Hospital.Name == "WAYNE HOSPITAL COMPANY" & Year == 2020,
+    63,
+    Number.of.Beds
+  ))
+
+data_all_years_filtered <- data_all_years_filtered %>%
+  mutate(Number.of.Beds = ifelse(
+    Hospital.Name == "BEAR LAKE MEMORIAL HOSPITAL" & Year == 2019,
+    97,
+    Number.of.Beds
+  ))
+
+data_all_years_filtered <- data_all_years_filtered %>%
+  mutate(Number.of.Beds = ifelse(
+    Hospital.Name == "OKLAHOMA HEART HOSPITAL" & Year == 2019,
+    97,
+    Number.of.Beds
+))
+    
+data_all_years_filtered <- data_all_years_filtered %>%
+  filter(Hospital.Name != "HOAG ORTHOPEDIC INSTITUTE")
+```
+
+
+```{r bed number parallel }
+data_all_years_bed <- data_all_years_filtered %>%
+  group_by(Year, Type.of.Control) %>%
+  summarise(avg_bedLOG = mean(Number.of.Beds, na.rm = TRUE))
+
+ggplot(data_all_years_bed, aes(x = Year, y = avg_bedLOG, color = Type.of.Control, group = Type.of.Control)) +
+  geom_line(linewidth = 1.2) +   
+  geom_point(size = 2) + 
+  labs(x = "Year", y = "bed numbers", color = "Hospital Type",
+       title = "Parallel Trends Check") +
+  theme_minimal() 
+  
+
+
+
+```
+
+```{r}
+data_all_years_filtered <- data_all_years_filtered %>% mutate(logDischarge = log(Total.Discharges.Title.XVIII))
+
+data_all_years_filtered <- data_all_years_filtered %>% mutate(logTotalCosts = log(Total.Costs))
+
+numeric_vars <- data_all_years_filtered %>%
+  ungroup() %>%  
+  select(
+    LOGFTE...Employees.on.Payroll,
+    Total.Salaries.From.Worksheet.ALOG,
+    Number.of.Beds,
+    logDischarge,
+    logTotalCosts
+  )
+
+# Summary statistics
+numeric_summary <- numeric_vars %>%
+  summarise_all(list(
+    Mean = ~mean(., na.rm = TRUE),
+    SD = ~sd(., na.rm = TRUE),
+    Min = ~min(., na.rm = TRUE),
+    Max = ~max(., na.rm = TRUE),
+    Median = ~median(., na.rm = TRUE)
+  )) %>%
+  pivot_longer(
+    cols = everything(),
+    names_to = c("Variable", "Statistic"),
+    names_sep = "_"
+  ) %>%
+  pivot_wider(names_from = Statistic, values_from = value)
+
+numeric_summary <- numeric_summary %>%
+  mutate(across(where(is.numeric), ~ format(round(., 2), big.mark = ",", scientific = FALSE)))
+
+numeric_summary %>%
+  kable(
+    caption = "Descriptive Statistics of Numeric Hospital Variables",
+    align = "lccccc",
+    col.names = c("Variable", "Mean", "SD", "Min", "Max", "Median"),
+    format = "html"
+  ) %>%
+  kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed", "responsive"),
+    full_width = FALSE,
+    font_size = 14
+  ) %>%
+  column_spec(1, bold = TRUE) %>%
+  column_spec(2:6, width = "6em")
+
+```
+
+```{r}
+
+numeric_vars <- data_all_years_filtered %>%
+  ungroup() %>%
+  select(
+    for_profit,
+    LOGFTE...Employees.on.Payroll,
+    Total.Salaries.From.Worksheet.ALOG,
+    Number.of.Beds,
+    logDischarge,
+    logTotalCosts
+  )
+
+# Compute summary statistics by ownership type
+numeric_summary_by_group <- numeric_vars %>%
+  group_by(for_profit) %>%
+  summarise(across(
+    .cols = c(
+      LOGFTE...Employees.on.Payroll,
+      Total.Salaries.From.Worksheet.ALOG,
+      Number.of.Beds,
+      logDischarge,
+      logTotalCosts
+    ),
+    .fns = list(
+      Mean = ~mean(., na.rm = TRUE),
+      SD = ~sd(., na.rm = TRUE),
+      Min = ~min(., na.rm = TRUE),
+      Max = ~max(., na.rm = TRUE),
+      Median = ~median(., na.rm = TRUE)
+    ),
+    .names = "{.col}_{.fn}"
+  )) %>%
+  pivot_longer(
+    cols = -for_profit,
+    names_to = c("Variable", "Statistic"),
+    names_sep = "_"
+  ) %>%
+  pivot_wider(names_from = Statistic, values_from = value) %>%
+  mutate(across(where(is.numeric), ~ round(., 2))) %>%
+  mutate(for_profit = ifelse(for_profit == 1, "For-Profit", "Non-Profit"))
+
+# Format table
+numeric_summary_by_group %>%
+  kable(
+    caption = "Descriptive Statistics by Ownership Type",
+    align = "lccccc",
+    col.names = c("Ownership Type", "Variable", "Mean", "SD", "Min", "Max", "Median"),
+    format = "html"
+  ) %>%
+  kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed", "responsive"),
+    full_width = FALSE,
+    font_size = 14
+  ) %>%
+  column_spec(1, bold = TRUE) %>%
+  column_spec(3:7, width = "6em")
+
+
+
+```
+
+
+
+
+```{r}
+data_all_years_filtered <- data_all_years_filtered %>%
+  mutate(
+    post = ifelse(Year >= 2017, 1, 0)
+  )
+```
+
+```{r}
+
+```
+
+```{r log employees on payroll regression}
+did_emp1 <- feols(LOGFTE...Employees.on.Payroll ~ post*for_profit | State.Code + Year, data_all_years_filtered)
+
+summary(did_emp1)
+
+did_emp2 <- feols(LOGFTE...Employees.on.Payroll ~ post*for_profit + Number.of.Beds + Total.Income + Total.Discharges.Title.XVIII + urban| State.Code + Year, data_all_years_filtered)
+
+summary(did_emp2)
+
+did_emp3  <-  feols(LOGFTE...Employees.on.Payroll ~ post*for_profit + Number.of.Beds + Total.Income+ Total.Discharges.Title.XVIII + urban | State.Code^Year, data_all_years_filtered)
+
+summary(did_emp3)
+```
+
+
+
+```{r}
+did_emp_noFE <- feols(
+  LOGFTE...Employees.on.Payroll ~ for_profit * post, 
+  data = data_all_years_filtered,
+  cluster = ~State.Code
+)
+
+
+model_summary <- broom::tidy(did_emp_noFE, conf.int = TRUE) %>%
+  select(term, estimate, conf.low, conf.high, p.value)
+
+kbl(model_summary, digits = 3, caption = "Difference-in-Differences Regression Results") %>%
+  kable_paper("striped", full_width = FALSE)
+
+```
+
+```{r}
+data_all_years_filtered %>%
+  group_by(State.Code, Year) %>%
+  summarize(mean_post = mean(post)) %>%
+  distinct(mean_post)
+
+cor(data_all_years_filtered[, c("post", "for_profit", "post_for_profit" = data_all_years$post * data_all_years$for_profit)])
+
+```
+
+```{r salary regression}
+did_sal <- feols(
+  Total.Salaries.From.Worksheet.ALOG ~ for_profit * post + 
+    Number.of.Beds + Total.Discharges.Title.XVIII + Total.Income + urban +
+    factor(State.Code):factor(Year),
+  data = data_all_years_filtered,
+  cluster = ~State.Code
+)
+
+model_summary <- broom::tidy(did_sal, conf.int = TRUE) %>%
+  select(term, estimate, conf.low, conf.high, p.value)
+
+kbl(model_summary, digits = 3, caption = "Difference-in-Differences Regression Results") %>%
+  kable_paper("striped", full_width = FALSE)
+
+
+```
+
+```{r 2017 2019 did}
+data_did_20172019period <- subset(data_all_years_filtered, Year %in% c(2017, 2019))
+data_did_20172019period$post <- ifelse(data_did_20172019period$Year == 2019, 1, 0)
+did_emp20172019 <- feols(LOGFTE...Employees.on.Payroll ~ post*for_profit , data_did_20172019period)
+summary(did_emp20172019)
+cor(data_did_20172019period$for_profit, data_did_20172019period$post) 
+cor(data_did_20172019period$for_profit, data_did_20172019period$for_profit * data_did_20172019period$post)
+```
+```{r 2017 2019 salaries log}
+did_emp20172019Sal <- feols(Total.Salaries.From.Worksheet.ALOG ~ post*for_profit , data_did_20172019period)
+summary(did_emp20172019Sal)
+```
+
+```{r 2017 2020 did}
+data_did_20172020period <- subset(data_all_years_filtered, Year %in% c(2017, 2020))
+data_did_20172020period$post <- ifelse(data_did_20172020period$Year == 2020, 1, 0)
+did_emp20172020 <- feols(LOGFTE...Employees.on.Payroll ~ post*for_profit , data_did_20172020period)
+summary(did_emp20172020)
+```
+```{r}
+did_emp20172020Sal <- feols(Total.Salaries.From.Worksheet.ALOG ~ post*for_profit , data_did_20172020period)
+summary(did_emp20172020Sal)
+```
+
+
+```{r 2017 2021 }
+data_did_20172021period <- subset(data_all_years_filtered, Year %in% c(2017, 2021))
+data_did_20172021period$post <- ifelse(data_did_20172021period$Year == 2021, 1, 0)
+did_emp20172021 <- feols(LOGFTE...Employees.on.Payroll ~ post*for_profit , data_did_20172021period)
+summary(did_emp20172021)
+```
+```{r}
+did_emp20172021Sal <- feols(Total.Salaries.From.Worksheet.ALOG ~ post*for_profit , data_did_20172021period)
+summary(did_emp20172021Sal)
+```
+
+```{r 2017 2022}
+data_did_20172022period <- subset(data_all_years_filtered, Year %in% c(2017, 2022))
+data_did_20172022period$post <- ifelse(data_did_20172022period$Year == 2022, 1, 0)
+did_emp20172022 <- feols(LOGFTE...Employees.on.Payroll ~ post*for_profit , data_did_20172022period)
+summary(did_emp20172022)
+```
+
+```{r}
+did_emp20172022Sal <- feols(Total.Salaries.From.Worksheet.ALOG ~ post*for_profit , data_did_20172022period)
+summary(did_emp20172022Sal)
+```
+
+```{r 2017 2019 did with control}
+data_did_20172019period <- subset(data_all_years_filtered, Year %in% c(2017, 2019))
+data_did_20172019period$post <- ifelse(data_did_20172019period$Year == 2019, 1, 0)
+did_emp20172019C <- feols(LOGFTE...Employees.on.Payroll ~ post*for_profit + 
+    Number.of.Beds + Total.Discharges.Title.XVIII +  urban , data_did_20172019period)
+summary(did_emp20172019C)
+```
+
+```{r 2017 2019 did with control with state fixed effect}
+data_did_20172019periodF <- subset(data_all_years, Year %in% c(2017, 2019))
+data_did_20172019periodF$post <- ifelse(data_did_20172019periodF$Year == 2019, 1, 0)
+did_emp20172019F <- feols(log(FTE...Employees.on.Payroll) ~ post*for_profit + 
+    Number.of.Beds + log(Total.Discharges.Title.XVIII) +  log(Total.Costs) +urban | State.Code, data_did_20172019periodF , vcov = "hetero")
+summary(did_emp20172019F)
+```
+
+```{r 2017 2019 did with control with state fixed effect log sal}
+did_emp20172019salF <- feols(log(Total.Salaries.From.Worksheet.A) ~ post*for_profit + 
+    Number.of.Beds + log(Total.Discharges.Title.XVIII) +  log(Total.Costs) +urban | State.Code, data_did_20172019periodF , vcov = "hetero")
+summary(did_emp20172019salF)
+```
+
+
+```{r 2017 2020 did with control with state fixed effect}
+data_did_20172020periodF <- subset(data_all_years, Year %in% c(2017, 2020))
+data_did_20172020periodF$post <- ifelse(data_did_20172020periodF$Year == 2020, 1, 0)
+did_emp20172020F <- feols(log(FTE...Employees.on.Payroll) ~ post*for_profit + 
+    Number.of.Beds + log(Total.Discharges.Title.XVIII) +  log(Total.Costs) +urban | State.Code, data_did_20172020periodF, vcov = "hetero")
+summary(did_emp20172020F)
+```
+
+```{r 2017 2020 did with control with state fixed effect log sal}
+did_emp20172020salF <- feols(log(Total.Salaries.From.Worksheet.A) ~ post*for_profit + 
+    Number.of.Beds + log(Total.Discharges.Title.XVIII) +  log(Total.Costs) +urban | State.Code, data_did_20172020periodF , vcov = "hetero")
+summary(did_emp20172020salF)
+```
+
+```{r 2017 2021 did with control with state fixed effect}
+data_did_20172021periodF <- subset(data_all_years, Year %in% c(2017, 2021))
+data_did_20172021periodF$post <- ifelse(data_did_20172021periodF$Year == 2021, 1, 0)
+did_emp20172021F <- feols(log(FTE...Employees.on.Payroll) ~ post*for_profit + 
+    Number.of.Beds + log(Total.Discharges.Title.XVIII) +  log(Total.Costs) +urban | State.Code, data_did_20172021periodF, vcov = "hetero")
+summary(did_emp20172021F)
+```
+```{r 2017 2021 did with control with state fixed effect log sal}
+did_emp20172021salF <- feols(log(Total.Salaries.From.Worksheet.A) ~ post*for_profit + 
+    Number.of.Beds + log(Total.Discharges.Title.XVIII) +  log(Total.Costs) +urban | State.Code, data_did_20172021periodF , vcov = "hetero")
+summary(did_emp20172021salF)
+```
+
+```{r 2017 2022 did with control with state fixed effect}
+data_did_20172022periodF <- subset(data_all_years, Year %in% c(2017, 2022))
+data_did_20172022periodF$post <- ifelse(data_did_20172022periodF$Year == 2022, 1, 0)
+did_emp20172022F <- feols(log(FTE...Employees.on.Payroll) ~ post*for_profit + 
+    Number.of.Beds + log(Total.Discharges.Title.XVIII) +  log(Total.Costs) +urban | State.Code, data_did_20172022periodF, vcov = "hetero")
+summary(did_emp20172022F)
+```
+```{r 2017 2022 did with control with state fixed effect log sal}
+did_emp20172022salF <- feols(log(Total.Salaries.From.Worksheet.A) ~ post*for_profit + 
+    Number.of.Beds + log(Total.Discharges.Title.XVIII) +  log(Total.Costs) +urban | State.Code, data_did_20172022periodF , vcov = "hetero")
+summary(did_emp20172022salF)
+```
+
+```{r differecning regression  2017 2019}
+data_diff2019 <- data_all_years_filtered %>%
+  filter(Year %in% c(2017, 2019)) %>%
+  group_by(Hospital.Name) %>%
+  summarize(
+    d_TotalSal = diff(Total.Salaries.From.Worksheet.ALOG),
+    d_LOGFTE = diff(LOGFTE...Employees.on.Payroll),
+    for_profit = first(for_profit),
+    d_beds = diff(Number.of.Beds),
+    d_income = diff(Total.Income),
+    d_discharges = diff(Total.Discharges.Title.XVIII),
+    d_urban = diff(urban)
+  )
+model_diff2019 <- lm(d_LOGFTE ~ for_profit + d_beds + d_income + d_discharges + d_urban,  data = data_diff2019)
+model_diff2019sal <- lm(d_TotalSal ~ for_profit + d_beds + d_income + d_discharges + d_urban,  data = data_diff2019)
+summary(model_diff2019)
+```
+```{r differecning regression  2017 2020}
+data_diff2020 <- data_all_years_filtered %>%
+  filter(Year %in% c(2017, 2020)) %>%
+  group_by(Hospital.Name) %>%
+  summarize(
+    d_TotalSal = diff(Total.Salaries.From.Worksheet.ALOG),
+    d_LOGFTE = diff(LOGFTE...Employees.on.Payroll),
+    for_profit = first(for_profit),
+    d_beds = diff(Number.of.Beds),
+    d_income = diff(Total.Income),
+    d_discharges = diff(Total.Discharges.Title.XVIII),
+    d_urban = diff(urban)
+  )
+model_diff2020 <- lm(d_LOGFTE ~ for_profit + d_beds + d_income + d_discharges + d_urban,  data = data_diff2020)
+model_diff2020sal <- lm(d_TotalSal ~ for_profit + d_beds + d_income + d_discharges + d_urban,  data = data_diff2020)
+summary(model_diff2020)
+```
+
+```{r differecning regression 2017 2021}
+data_diff2021 <- data_all_years_filtered %>%
+  filter(Year %in% c(2017, 2021)) %>%
+  group_by(Hospital.Name) %>%
+  summarize(
+    d_TotalSal = diff(Total.Salaries.From.Worksheet.ALOG),
+    d_LOGFTE = diff(LOGFTE...Employees.on.Payroll),
+    for_profit = first(for_profit),
+    d_beds = diff(Number.of.Beds),
+    d_income = diff(Total.Income),
+    d_discharges = diff(Total.Discharges.Title.XVIII),
+    d_urban = diff(urban)
+  )
+model_diff2021 <- lm(d_LOGFTE ~ for_profit  + d_beds + d_income + d_discharges + d_urban, data = data_diff2021)
+model_diff2021sal <- lm(d_TotalSal ~ for_profit  + d_beds + d_income + d_discharges + d_urban, data = data_diff2021)
+summary(model_diff2021)
+```
+```{r differecning regression employee 2017 2022}
+data_diff2022 <- data_all_years_filtered %>%
+  filter(Year %in% c(2017, 2022)) %>%
+  group_by(Hospital.Name) %>%
+  summarize(
+    d_TotalSal = diff(Total.Salaries.From.Worksheet.ALOG),
+    d_LOGFTE = diff(LOGFTE...Employees.on.Payroll),
+    for_profit = first(for_profit),
+    d_beds = diff(Number.of.Beds),
+    d_income = diff(Total.Income),
+    d_discharges = diff(Total.Discharges.Title.XVIII),
+    d_urban = diff(urban)
+  )
+model_diff2022 <- lm(d_LOGFTE ~ for_profit + d_beds + d_income + d_discharges + d_urban,  data = data_diff2022)
+model_diff2022sal <- lm(d_TotalSal ~ for_profit + d_beds + d_income + d_discharges + d_urban,  data = data_diff2022)
+summary(model_diff2022)
+```
+
+
+```{r DID model summary}
+modelsummary(
+  list(
+    "DID 2017 vs 2019" = did_emp20172019,
+    "DID 2017 vs 2020" = did_emp20172020,
+    "DID 2017 vs 2021" = did_emp20172021,
+    "DID 2017 vs 2022" = did_emp20172022
+  ),
+  statistic = "({std.error})",  
+  stars = TRUE,
+  gof_omit = "AIC|BIC|Log.Lik|F|Adj",  
+  title = "Table 5: Difference-in-Differences Regression log(FTE Employees) results",
+  output = "markdown"
+)
+```
+
+```{r DID control and fixed effect }
+modelsummary(
+  list(
+    "DID 2017 vs 2019 " = did_emp20172019F,
+    "DID 2017 vs 2020 " = did_emp20172020F,
+    "DID 2017 vs 2021 " = did_emp20172021F,
+    "DID 2017 vs 2022 " = did_emp20172022F
+  ),
+  statistic = "({std.error})",  
+  stars = TRUE,
+  gof_omit = "AIC|BIC|Log.Lik|F|Adj",  
+  title = "Table 6: Difference-in-Differences Regression log(FTE Employees) with control and fixed effects results",
+  output = "markdown"
+)
+```
+
+```{r}
+modelsummary(
+  list(
+    "DID(Log salary) 2017 vs 2019" = did_emp20172019Sal,
+    "DID(Log salary) 2017 vs 2020" = did_emp20172020Sal,
+    "DID(Log salary) 2017 vs 2021" = did_emp20172021Sal,
+    "DID(Log salary) 2017 vs 2022" = did_emp20172022Sal
+  ),
+  statistic = "({std.error})",  
+  stars = TRUE,
+  gof_omit = "AIC|BIC|Log.Lik|F|Adj",  
+  title = "Table 7: Difference-in-Differences Regression log(total salaries) results",
+  output = "markdown"
+)
+
+
+```
+
+
+```{r}
+modelsummary(
+  list(
+    "DID(Log salary) 2017 vs 2019" = did_emp20172019salF,
+    "DID(Log salary) 2017 vs 2020" = did_emp20172020salF,
+    "DID(Log salary) 2017 vs 2021" = did_emp20172021salF,
+    "DID(Log salary) 2017 vs 2022" = did_emp20172022salF
+  ),
+  statistic = "({std.error})",  
+  stars = TRUE,
+  gof_omit = "AIC|BIC|Log.Lik|F|Adj",  
+  title = "Table 8: Difference-in-Differences Regression log(total salaries) with control and state fixed effect results",
+  output = "markdown"
+)
+```
+
+```{r}  
+#write_xlsx(data_all_years_filtered, path = "data_all_years_filtered.xlsx")
+```
+
+```{r}
+modelsummary(
+  list(
+    "Log (FTE Employees) 2017 vs 2019" = model_diff2019,
+    "Log (FTE Employees) 2017 vs 2020" = model_diff2020,
+    "Log (FTE Employees) 2017 vs 2021" = model_diff2021,
+    "Log (FTE Employees) 2017 vs 2022" = model_diff2022
+  ),
+  statistic = "({std.error})",  
+  stars = TRUE,
+  gof_omit = "AIC|BIC|Log.Lik|F|Adj",  
+  title = "Table 9: First Differencing Regression log(FTE Employees) results",
+  output = "markdown"
+)
+
+```
+
+```{r}
+modelsummary(
+  list(
+    "Log (Total Salary) 2017 vs 2019" = model_diff2019sal,
+    "Log (Total Salary) 2017 vs 2020" = model_diff2020sal,
+    "Log (Total Salary) 2017 vs 2021" = model_diff2021sal,
+    "Log (Total Salary) 2017 vs 2022" = model_diff2022sal
+  ),
+  statistic = "({std.error})",  
+  stars = TRUE,
+  gof_omit = "AIC|BIC|Log.Lik|F|Adj",  
+  title = "Table 10: First Differencing Regression log(Total Salary) results",
+  output = "markdown"
+)
+```
+
+```{r}
+
+```
+```{r}
+
+```
+```{r}
+
+```
+```{r}
+
+```
+```{r}
+
+```
+
+
+
+
+
