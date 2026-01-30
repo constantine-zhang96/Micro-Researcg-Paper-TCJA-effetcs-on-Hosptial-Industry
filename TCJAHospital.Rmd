@@ -19,6 +19,7 @@ library(fixest)
 library(openxlsx)
 library(writexl)
 library(modelsummary)
+library(tinytable)
 ```
 
 ```{r reading datas}
@@ -174,7 +175,7 @@ excluded_states <- hospital_summary %>%
 
 kable(
   excluded_states,
-  caption = "States Excluded from DID Analysis",
+  caption = "(Table 2) States Excluded from DID Analysis",
   col.names = c("State", "Percent For-Profit Hospitals"),
   align = "lc"
 )
@@ -192,12 +193,20 @@ data_all_years_plotFTEpayrolllog <- data_all_years_filtered %>%
   summarise(avg_LOGFTEpayroll = median(LOGFTE...Employees.on.Payroll, na.rm = TRUE))
 
 
-ggplot(data_all_years_plotFTEpayrolllog, aes(x = Year, y = avg_LOGFTEpayroll, color = Type.of.Control, group = Type.of.Control)) +
+ggplot(data_all_years_plotFTEpayrolllog, 
+       aes(x = Year, 
+           y = avg_LOGFTEpayroll, 
+           color = Type.of.Control, 
+           group = Type.of.Control,
+           linetype = Type.of.Control)) +  
   geom_line(linewidth = 1.2) +   
   geom_point(size = 2) + 
   geom_vline(xintercept = 2018, linetype = "dashed", color = "red", linewidth = 1) + 
-  labs(x = "Year", y = " log of full time employees on Payroll", color = "Hospital Type",
-       title = "Parallel Trends Check for log(employees on payroll)") +
+  labs(x = "Year", 
+       y = "Log of FTE Employees on Payroll", 
+       color = "Hospital Type",
+       linetype = "Hospital Type",       
+       title = "(Figure 1) Parallel Trends Check for log(FTE Employees)") +
   theme_minimal() + 
   ylim(5, 6.5)
 
@@ -243,15 +252,22 @@ data_all_years_plotsalaryLOG <- data_all_years_filtered %>%
   group_by(Year, Type.of.Control) %>%
   summarise(avg_salaryLOG = median(Total.Salaries.From.Worksheet.ALOG, na.rm = TRUE))
 
-ggplot(data_all_years_plotsalaryLOG, aes(x = Year, y = avg_salaryLOG, color = Type.of.Control, group = Type.of.Control)) +
+ggplot(data_all_years_plotsalaryLOG, 
+       aes(x = Year, 
+           y = avg_salaryLOG, 
+           color = Type.of.Control, 
+           group = Type.of.Control,
+           linetype = Type.of.Control)) +  # map line type to group
   geom_line(linewidth = 1.2) +   
-  geom_point(size = 2) + 
+  geom_point(size = 3) + 
   geom_vline(xintercept = 2018, linetype = "dashed", color = "red", linewidth = 1) + 
-  labs(x = "Year", y = "log of total salary from worksheet A", color = "Hospital Type",
-       title = "Parallel Trends Check for log(total salary)") +
+  labs(x = "Year", 
+       y = "Log of Total Salary from Worksheet A", 
+       color = "Hospital Type",
+       linetype = "Hospital Type",   # legend for line types
+       title = "(Figure 2) Parallel Trends Check for log(Total Salary)") +
   theme_minimal() + 
-  ylim(16,17.5)
-
+  coord_cartesian(ylim = c(16, 17.5))  # safer than ylim
 ```
 
 ```{r parallel trend income}
@@ -356,6 +372,14 @@ ggplot(data_all_years_bed, aes(x = Year, y = avg_bedLOG, color = Type.of.Control
 ```
 
 ```{r}
+variable_names <- c(
+  "FTE...Employees.on.Payroll"       = "FTE Employees",
+  "Total.Salaries.From.Worksheet.A"  = "Total Salaries",
+  "Number.of.Beds"                   = "Number of Beds",
+  "Total.Discharges.Title.XVIII"     = "Total Discharges",
+  "Total.Costs"                      = "Total Costs"
+)
+
 data_all_years_filtered <- data_all_years_filtered %>% mutate(logDischarge = log(Total.Discharges.Title.XVIII))
 
 data_all_years_filtered <- data_all_years_filtered %>% mutate(logTotalCosts = log(Total.Costs))
@@ -363,11 +387,11 @@ data_all_years_filtered <- data_all_years_filtered %>% mutate(logTotalCosts = lo
 numeric_vars <- data_all_years_filtered %>%
   ungroup() %>%  
   select(
-    LOGFTE...Employees.on.Payroll,
-    Total.Salaries.From.Worksheet.ALOG,
+    FTE...Employees.on.Payroll,
+    Total.Salaries.From.Worksheet.A,
     Number.of.Beds,
-    logDischarge,
-    logTotalCosts
+    Total.Discharges.Title.XVIII,
+    Total.Costs
   )
 
 # Summary statistics
@@ -388,10 +412,11 @@ numeric_summary <- numeric_vars %>%
 
 numeric_summary <- numeric_summary %>%
   mutate(across(where(is.numeric), ~ format(round(., 2), big.mark = ",", scientific = FALSE)))
-
+numeric_summary <- numeric_summary %>%
+  mutate(Variable = recode(Variable, !!!variable_names))
 numeric_summary %>%
   kable(
-    caption = "Descriptive Statistics of Numeric Hospital Variables",
+    caption = "(Table 3) Descriptive Statistics of Numeric Hospital Variables",
     align = "lccccc",
     col.names = c("Variable", "Mean", "SD", "Min", "Max", "Median"),
     format = "html"
@@ -412,11 +437,11 @@ numeric_vars <- data_all_years_filtered %>%
   ungroup() %>%
   select(
     for_profit,
-    LOGFTE...Employees.on.Payroll,
-    Total.Salaries.From.Worksheet.ALOG,
+    FTE...Employees.on.Payroll,
+    Total.Salaries.From.Worksheet.A,
     Number.of.Beds,
-    logDischarge,
-    logTotalCosts
+    Total.Discharges.Title.XVIII,
+    Total.Costs
   )
 
 # Compute summary statistics by ownership type
@@ -424,11 +449,11 @@ numeric_summary_by_group <- numeric_vars %>%
   group_by(for_profit) %>%
   summarise(across(
     .cols = c(
-      LOGFTE...Employees.on.Payroll,
-      Total.Salaries.From.Worksheet.ALOG,
-      Number.of.Beds,
-      logDischarge,
-      logTotalCosts
+      FTE...Employees.on.Payroll,
+    Total.Salaries.From.Worksheet.A,
+    Number.of.Beds,
+    Total.Discharges.Title.XVIII,
+    Total.Costs
     ),
     .fns = list(
       Mean = ~mean(., na.rm = TRUE),
@@ -448,10 +473,14 @@ numeric_summary_by_group <- numeric_vars %>%
   mutate(across(where(is.numeric), ~ round(., 2))) %>%
   mutate(for_profit = ifelse(for_profit == 1, "For-Profit", "Non-Profit"))
 
+
+numeric_summary_by_group <- numeric_summary_by_group %>%
+  mutate(Variable = recode(Variable, !!!variable_names))
+
 # Format table
 numeric_summary_by_group %>%
   kable(
-    caption = "Descriptive Statistics by Ownership Type",
+    caption = "(Table 4) Descriptive Statistics by Ownership Type",
     align = "lccccc",
     col.names = c("Ownership Type", "Variable", "Mean", "SD", "Min", "Max", "Median"),
     format = "html"
@@ -661,13 +690,12 @@ data_diff2019 <- data_all_years_filtered %>%
     d_TotalSal = diff(Total.Salaries.From.Worksheet.ALOG),
     d_LOGFTE = diff(LOGFTE...Employees.on.Payroll),
     for_profit = first(for_profit),
-    d_beds = diff(Number.of.Beds),
-    d_income = diff(Total.Income),
-    d_discharges = diff(Total.Discharges.Title.XVIII),
+     d_beds = diff(log(Number.of.Beds)),
+    d_discharges = diff(log(Total.Discharges.Title.XVIII)),
     d_urban = diff(urban)
   )
-model_diff2019 <- lm(d_LOGFTE ~ for_profit + d_beds + d_income + d_discharges + d_urban,  data = data_diff2019)
-model_diff2019sal <- lm(d_TotalSal ~ for_profit + d_beds + d_income + d_discharges + d_urban,  data = data_diff2019)
+model_diff2019 <- lm(d_LOGFTE ~ for_profit + d_beds  + d_discharges + d_urban,  data = data_diff2019)
+model_diff2019sal <- lm(d_TotalSal ~ for_profit + d_beds  + d_discharges + d_urban,  data = data_diff2019)
 summary(model_diff2019)
 ```
 ```{r differecning regression  2017 2020}
@@ -678,13 +706,12 @@ data_diff2020 <- data_all_years_filtered %>%
     d_TotalSal = diff(Total.Salaries.From.Worksheet.ALOG),
     d_LOGFTE = diff(LOGFTE...Employees.on.Payroll),
     for_profit = first(for_profit),
-    d_beds = diff(Number.of.Beds),
-    d_income = diff(Total.Income),
-    d_discharges = diff(Total.Discharges.Title.XVIII),
+     d_beds = diff(log(Number.of.Beds)),
+    d_discharges = diff(log(Total.Discharges.Title.XVIII)),
     d_urban = diff(urban)
   )
-model_diff2020 <- lm(d_LOGFTE ~ for_profit + d_beds + d_income + d_discharges + d_urban,  data = data_diff2020)
-model_diff2020sal <- lm(d_TotalSal ~ for_profit + d_beds + d_income + d_discharges + d_urban,  data = data_diff2020)
+model_diff2020 <- lm(d_LOGFTE ~ for_profit + d_beds  + d_discharges + d_urban,  data = data_diff2020)
+model_diff2020sal <- lm(d_TotalSal ~ for_profit + d_beds  + d_discharges + d_urban,  data = data_diff2020)
 summary(model_diff2020)
 ```
 
@@ -696,13 +723,12 @@ data_diff2021 <- data_all_years_filtered %>%
     d_TotalSal = diff(Total.Salaries.From.Worksheet.ALOG),
     d_LOGFTE = diff(LOGFTE...Employees.on.Payroll),
     for_profit = first(for_profit),
-    d_beds = diff(Number.of.Beds),
-    d_income = diff(Total.Income),
-    d_discharges = diff(Total.Discharges.Title.XVIII),
+     d_beds = diff(log(Number.of.Beds)),
+    d_discharges = diff(log(Total.Discharges.Title.XVIII)),
     d_urban = diff(urban)
   )
-model_diff2021 <- lm(d_LOGFTE ~ for_profit  + d_beds + d_income + d_discharges + d_urban, data = data_diff2021)
-model_diff2021sal <- lm(d_TotalSal ~ for_profit  + d_beds + d_income + d_discharges + d_urban, data = data_diff2021)
+model_diff2021 <- lm(d_LOGFTE ~ for_profit  + d_beds  + d_discharges + d_urban, data = data_diff2021)
+model_diff2021sal <- lm(d_TotalSal ~ for_profit  + d_beds  + d_discharges + d_urban, data = data_diff2021)
 summary(model_diff2021)
 ```
 ```{r differecning regression employee 2017 2022}
@@ -713,13 +739,12 @@ data_diff2022 <- data_all_years_filtered %>%
     d_TotalSal = diff(Total.Salaries.From.Worksheet.ALOG),
     d_LOGFTE = diff(LOGFTE...Employees.on.Payroll),
     for_profit = first(for_profit),
-    d_beds = diff(Number.of.Beds),
-    d_income = diff(Total.Income),
-    d_discharges = diff(Total.Discharges.Title.XVIII),
+    d_beds = diff(log(Number.of.Beds)),
+    d_discharges = diff(log(Total.Discharges.Title.XVIII)),
     d_urban = diff(urban)
   )
-model_diff2022 <- lm(d_LOGFTE ~ for_profit + d_beds + d_income + d_discharges + d_urban,  data = data_diff2022)
-model_diff2022sal <- lm(d_TotalSal ~ for_profit + d_beds + d_income + d_discharges + d_urban,  data = data_diff2022)
+model_diff2022 <- lm(d_LOGFTE ~ for_profit + d_beds  + d_discharges + d_urban,  data = data_diff2022)
+model_diff2022sal <- lm(d_TotalSal ~ for_profit + d_beds  + d_discharges + d_urban,  data = data_diff2022)
 summary(model_diff2022)
 ```
 
@@ -736,8 +761,18 @@ modelsummary(
   stars = TRUE,
   gof_omit = "AIC|BIC|Log.Lik|F|Adj",  
   title = "Table 5: Difference-in-Differences Regression log(FTE Employees) results",
-  output = "markdown"
+  output = "markdown",
+  coef_map = c(
+  `(Intercept)`      = "Intercept",
+  `post:for_profit` = "Post*For Profit",
+  `for_profit` = "For Profit",
+  `post`             = "Post"
+  
 )
+)
+```
+```{r}
+names(coef(did_emp20172019F))
 ```
 
 ```{r DID control and fixed effect }
@@ -752,8 +787,22 @@ modelsummary(
   stars = TRUE,
   gof_omit = "AIC|BIC|Log.Lik|F|Adj",  
   title = "Table 6: Difference-in-Differences Regression log(FTE Employees) with control and fixed effects results",
-  output = "markdown"
+  output = "markdown",
+  coef_map = c(
+  `(Intercept)`      = "Intercept",
+  `post:for_profit` = "Post*For Profit",
+  `for_profit` = "For Profit",
+  `post`             = "Post",
+  `beds`             = "Number of Beds",
+  `log(Total.Discharges.Title.XVIII)`             = "Total Discharges",
+  `log(Total.Costs)`             = "Total Costs",
+  `urban`             = "urban"
+  
 )
+)
+```
+```{r}
+names(coef(did_emp20172019Sal))
 ```
 
 ```{r}
@@ -768,12 +817,21 @@ modelsummary(
   stars = TRUE,
   gof_omit = "AIC|BIC|Log.Lik|F|Adj",  
   title = "Table 7: Difference-in-Differences Regression log(total salaries) results",
-  output = "markdown"
+  output = "markdown",
+  coef_map = c(
+  `(Intercept)`      = "Intercept",
+  `post:for_profit` = "Post*For Profit",
+  `for_profit` = "For Profit",
+  `post`             = "Post"
+  
+)
 )
 
 
 ```
-
+```{r}
+names(coef(did_emp20172019salF))
+```
 
 ```{r}
 modelsummary(
@@ -787,12 +845,28 @@ modelsummary(
   stars = TRUE,
   gof_omit = "AIC|BIC|Log.Lik|F|Adj",  
   title = "Table 8: Difference-in-Differences Regression log(total salaries) with control and state fixed effect results",
-  output = "markdown"
+  output = "markdown",
+  coef_map = c(
+  `(Intercept)`      = "Intercept",
+  `post:for_profit` = "Post*For Profit",
+  `for_profit` = "For Profit",
+  `post`             = "Post",
+  `beds`             = "Number of Beds",
+  `log(Total.Discharges.Title.XVIII)`             = "Total Discharges",
+  `log(Total.Costs)`             = "Total Costs",
+  `urban`             = "urban"
+  
+)
 )
 ```
 
 ```{r}  
 #write_xlsx(data_all_years_filtered, path = "data_all_years_filtered.xlsx")
+```
+
+
+```{r}
+names(coef(model_diff2019))
 ```
 
 ```{r}
@@ -806,8 +880,18 @@ modelsummary(
   statistic = "({std.error})",  
   stars = TRUE,
   gof_omit = "AIC|BIC|Log.Lik|F|Adj",  
-  title = "Table 9: First Differencing Regression log(FTE Employees) results",
-  output = "markdown"
+  title = "Table 9: First Differencing Regression log(FTE Employees)",
+  output = "markdown",
+  coef_map = c(
+  `(Intercept)`      = "Intercept",
+  `for_profit` = "For Profit",
+  `post`             = "Post",
+  `d_beds`             = "Number of Beds",
+  `d_income`             = "Income",
+  `d_discharges`             = "Discharge",
+  `urban`             = "urban"
+  
+)
 )
 
 ```
@@ -823,12 +907,37 @@ modelsummary(
   statistic = "({std.error})",  
   stars = TRUE,
   gof_omit = "AIC|BIC|Log.Lik|F|Adj",  
-  title = "Table 10: First Differencing Regression log(Total Salary) results",
+  title = "Table 10: First Differencing Regression log(Total Salary)",
   output = "markdown"
 )
 ```
 
 ```{r}
+models <- list(
+  "FTE Employee 2019" = model_diff2019,
+  "FTE Employee 2020" = model_diff2020,
+  "FTE Employee 2021" = model_diff2021,
+  "FTE Employee 2022" = model_diff2022,
+  
+  "Total Salaries 2019" = model_diff2019sal,
+  "Total Salaries 2020" = model_diff2020sal,
+  "Total Salaries 2021" = model_diff2021sal,
+  "Total Salaries 2022" = model_diff2022sal
+
+)
+
+modelsummary(
+  models,
+  statistic = "({std.error})",
+  stars = TRUE,                 
+  gof_omit = "^(?!R2)"
+) |>
+  group_tt(
+    j = list(
+      "FTE Employee" = 2:5,
+      "Total Salaries" = 6:9
+    )
+  )
 
 ```
 ```{r}
